@@ -259,6 +259,7 @@ if(sessionStorage.getItem('pw_ok')==='1'){
         <select id="fAgenda" onchange="render()">
           <option value="">Todos</option>
           <option value="1">S&oacute; agenda</option>
+          <option value="0">Sem consulta agendada</option>
         </select>
       </div>
 
@@ -555,7 +556,7 @@ function render(){
   var ageMax=parseInt(document.getElementById('ageMax').value)||0;
 
   var data=[];
-  var showOnlyAg=(ag==='1');
+  var showOnlyAg=(ag==='1'); var showNoAg=(ag==='0');
   if(showOnlyAg){
     var pool=agendaOrder.length>0?agendaOrder:Array.from(agendaSet);
     pool.forEach(function(nop){
@@ -575,6 +576,7 @@ function render(){
       if(selInds.length>0&&!selInds.every(function(id){return !!u.inds[id];}))return false;
       if(tot&&u.total<tot)return false;
       if(ageMin&&u.ageN<ageMin)return false;if(ageMax&&u.ageN>ageMax)return false;
+      if(showNoAg&&agendaFileMap&&agendaFileMap[u.nop]&&agendaFileMap[u.nop].length>0)return false;
       return true;
     });
   }
@@ -673,8 +675,16 @@ function toggleDetail(tr,u){
       var fiTags=fi.length>0?fi.map(function(id){
         return '<span class="ind-tag" style="font-size:.68rem">'+id+' \u2014 '+(IND_NAMES[id]||id)+'</span>';
       }).join(''):'<span class="ind-tag-ok">\u2713</span>';
+      var famConsultas=(agendaFileMap&&agendaFileMap[f.nop]&&agendaFileMap[f.nop].length>0)
+        ?agendaFileMap[f.nop].map(function(x){
+            var mb=x.meio==='tel'?'\ud83d\udcde Tel':'\ud83d\udcf9 Pres.';
+            var label='\ud83d\udcc5 '+x.date+(x.tipo?' — '+x.tipo+' '+mb:'');
+            return '<span class="consult-badge">'+label+'</span>';
+          }).join('')
+        :'';
       return '<div class="fam-member"><strong>'+f.nome+'</strong> &middot; '+f.sexo+' &middot; '+f.idade+
         (f.sns?' &middot; SNS: '+f.sns:'')+' &middot; Proc. '+f.nop+
+        (famConsultas?'<div style="margin-top:3px">'+famConsultas+'</div>':'')+
         '<div class="ind-wrap" style="margin-top:3px">'+fiTags+'</div></div>';
     }).join('');
     famHtml='<div class="fam-box"><div class="fam-title">\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67 Fam\u00edlia</div>'+members+'</div>';
