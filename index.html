@@ -372,46 +372,110 @@ function parseL01(data){
 }
 
 function parseAgenda(data){
-  // Encontra linha de cabecalho com "Data"
-  var hdrRow=0,dateCol=-1,eventCol=-1,nameCol=-1;
-  for(var i=0;i<Math.min(15,data.length);i++){
-    for(var j=0;j<data[i].length;j++){
-      var c=String(data[i][j]).trim().toLowerCase().replace(/\s+/g,' ');
-      if(c==='data'||c==='dt')dateCol=j;
-      if(c.indexOf('tipo')>=0)eventCol=j;
-      if(c.indexOf('nome')>=0||c.indexOf('sns')>=0)nameCol=j;
-    }
-    if(dateCol>=0){hdrRow=i+1;break;}
-  }
-  // fallback: se nao encontrou eventCol, assume col dateCol+2
-  if(dateCol>=0&&eventCol<0)eventCol=dateCol+2;
-  if(dateCol<0)return[];
-  // Se nao encontrou coluna de nome, procura coluna com numero de 9 digitos
+  // Completely format-agnostic parser for SClinico agenda exports
+  // Works regardless of column layout or export format
+  // Only relies on patterns always present: date, time, 9-digit SNS, meio keyword
+
   var results=[];
-  for(var r=hdrRow;r<data.length;r++){
-    var row=data[r];
-    var dateRaw=String(row[dateCol]||'').trim();
-    var dm=dateRaw.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/);
-    if(!dm)continue;
-    var dateFmt=dm[1].padStart(2,'0')+'/'+dm[2].padStart(2,'0')+'/'+dm[3];
-    var rowStr=row.join(' ');
-    var snsMatch=rowStr.match(/\b(\d{9})\b/);
-    if(!snsMatch)continue;
-    var tipo=eventCol>=0?String(row[eventCol]||'').trim().replace(/\s+/g,' '):''; tipo=tipo.replace(/^[-–—\s]+|[-–—\s]+$/g,'');
-    // Fallback: se tipo vazio (linhas pos quebra de pagina - tudo numa celula)
-    if(!tipo){
-      var TIPOS=['TELECONSULTA','DIABETES','HIPERTENSAO','S.ADULTOS','S.INFANTIL',
-        'S.MATERNA','S.MULHER','P.FAMILIAR','I.MEDICAS','NAO ASSISTEN','DOMICILIOS',
-        'BAIXAS','CONSULTA SEM','RASTREIO','VACINACAO','VIGILANCIA','ADMINISTRATIVO'];
-      var rowFull=row.join(' ');
-      for(var ti=0;ti<TIPOS.length;ti++){
-        if(rowFull.indexOf(TIPOS[ti])>=0){tipo=TIPOS[ti];break;}
-      }
-    }
-    var rStr=row.join(' ').toLowerCase();
-    var meio=(rStr.indexOf('telefone')>=0||rStr.indexOf('telemo')>=0)?'tel':'';
-    results.push({sns:snsMatch[1],date:dateFmt,tipo:tipo,meio:meio});
+  var seen={};
+
+  function rowToString(row){
+    // Concatenate all non-null cells into one searchable string
+    return row.map(function(c){return c!=null?String(c).trim():'';}).join(' ');
   }
+
+  function fmtDate(raw){
+    if(!raw&&raw!==0)return null;
+    var s=String(raw).trim();
+    // DD-MM-YYYY
+    var m=s.match(/^(\d{2})-(\d{2})-(\d{4})/);
+    if(m)return s.substring(0,10);
+    // M/D/YYYY or MM/DD/YYYY (sheetjs US locale)
+    var m2=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if(m2)return m2[1].padStart(2,'0')+'-'+m2[2].padStart(2,'0')+'-'+m2[3];
+    // YYYY-MM-DD
+    var m3=s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if(m3)return m3[3]+'-'+m3[2]+'-'+m3[1];
+    return null;
+  }
+
+  function extractDate(fullStr){
+    // DD-MM-YYYY anywhere in string
+    var m=fullStr.match(/(\d{2}-\d{2}-\d{4})/);
+    if(m)return m[1];
+    return null;
+  }
+
+  function extractSNS(fullStr){
+    // 9-digit number (SNS) - avoid matching years/dates
+    var matches=fullStr.match(/\b(\d{9})\b/g);
+    if(matches&&matches.length>0)return matches[0];
+    // fallback 8-digit
+    var m8=fullStr.match(/\b(\d{8})\b/);
+    return m8?m8[1]:null;
+  }
+
+  function extractTipo(fullStr){
+    // Tipo always appears after HH:MM pattern
+    var m=fullStr.match(/\d{2}:\d{2}\s+([\w\u00C0-\u024F\u00E0-\u00FF]+(?:[.\-][\w\u00C0-\u024F\u00E0-\u00FF]+)*)/);
+    if(!m)return '';
+    var raw=m[1].trim();
+    // Clean up - remove trailing punctuation
+    return raw.replace(/[.,;:]+$/,'');
+  }
+
+  function extractMeio(fullStr){
+    var s=fullStr.toLowerCase();
+    return (s.indexOf('telef')>=0||s.indexOf('telem')>=0)?'tel':'';
+  }
+
+  function isJunk(fullStr){
+    // Skip headers, footers, page markers, empty
+    if(!fullStr||fullStr.length<10)return true;
+    var s=fullStr.toLowerCase();
+    if(s.indexOf('processado')>=0)return true;
+    if(s.indexOf('marcações por')>=0||s.indexOf('marcacoes por')>=0)return true;
+    if(s.indexOf('tipo de evento')>=0)return true;
+    if(s.indexOf('profissional:')>=0)return true;
+    if(s.indexOf('instituição:')>=0||s.indexOf('instituicao:')>=0)return true;
+    if(/página\s+\d+\s+de\s+\d+/i.test(fullStr))return true;
+    if(/pagina\s+\d+\s+de\s+\d+/i.test(fullStr))return true;
+    // Corrupt page-break rows: very long, no date pattern, mixed content
+    if(fullStr.length>120&&!fullStr.match(/\d{2}-\d{2}-\d{4}/)&&!fullStr.match(/^\d{1,2}\/\d{1,2}\/\d{4}/))return true;
+    return false;
+  }
+
+  for(var r=0;r<data.length;r++){
+    var row=data[r];
+    if(!row||!row.length)continue;
+
+    // Try col0 as structured date first (sheetjs Date object → string)
+    var col0=row[0]!=null?String(row[0]).trim():'';
+    var dateFmt=fmtDate(col0);
+
+    var fullStr=rowToString(row);
+    if(isJunk(fullStr))continue;
+
+    if(!dateFmt){
+      // Try extracting date from full string (FORMAT 2: text dump)
+      dateFmt=extractDate(fullStr);
+    }
+    if(!dateFmt)continue;
+
+    var sns=extractSNS(fullStr);
+    if(!sns)continue;
+
+    var tipo=extractTipo(fullStr);
+    var meio=extractMeio(fullStr);
+
+    // Deduplicate
+    var key=dateFmt+'|'+sns+'|'+tipo;
+    if(seen[key])continue;
+    seen[key]=true;
+
+    results.push({sns:sns,date:dateFmt,tipo:tipo,meio:meio});
+  }
+
   return results;
 }
 
